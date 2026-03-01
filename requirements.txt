@@ -1,0 +1,6 @@
+yfinance
+pandas
+time
+lxml
+fastparquet
+numpy
