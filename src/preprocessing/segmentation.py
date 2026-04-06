@@ -1,8 +1,9 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-import h5py  
+import h5py
 
+ROOT = Path(__file__).resolve().parents[2]
 
 # LOAD DATA
 
@@ -10,7 +11,7 @@ print("\n[1/5] LOADING DATA...")
 print("-" * 70)
 
 # Read the CSV file you downloaded
-prices = pd.read_csv("../../data/raw/sp500_prices.csv", index_col=0, parse_dates=True)
+prices = pd.read_csv(ROOT / "data/raw/sp500_prices.csv", index_col=0, parse_dates=True)
 
 print(f"✓ Loaded successfully")
 print(f"  Rows (trading days): {prices.shape[0]:,}")
@@ -80,13 +81,7 @@ print(f"  Per stock (average): {len(segments) / 498:.0f} segments")
 print("\n[3/5] SAVING RAW SEGMENTS...")
 print("-" * 70)
 
-# HDF5 is best for large arrays because:
-# - Compressed (saves space)
-# - Fast access
-# - Can store metadata
-# - Professional format
-
-h5_file = "../../data/processed/segments.h5"
+h5_file = ROOT / "data/processed/segments.h5"
 with h5py.File(h5_file, 'w') as f:
     # Create dataset for segments
     f.create_dataset(
@@ -107,17 +102,8 @@ print(f"  Shape: {X.shape}")
 print(f"  Data type: {X.dtype}")
 print(f"  Range: [${X.min():.2f}, ${X.max():.2f}]")
 
-# ALSO save as .npy (numpy format) for compatibility
-npy_file = "../../data/processed/segments.npy"
-np.save(npy_file, X)
 
-print(f"✓ Also saved NPY format: {npy_file}")
-
-#save as csv 
-#df = pd.DataFrame(X)
-#df.to_csv("../../data/processed/segments.csv")
-#print(f"✓ Also saved csv format")
-
+#########################################################################
 # SAVE METADATA
 #########################################################################
 
@@ -128,7 +114,7 @@ print("-" * 70)
 metadata_df = pd.DataFrame(metadata)
 
 # Save as CSV for easy inspection
-csv_file = "../../data/processed/segments_metadata.csv"
+csv_file = ROOT / "data/processed/segments_metadata.csv"
 metadata_df.to_csv(csv_file, index=False)
 
 print(f"✓ Saved metadata: {csv_file}")
@@ -150,7 +136,7 @@ print("-" * 70)
 # Verify files were saved
 files = {
     'HDF5 segments': h5_file,
-    'NPY segments': npy_file,
+#   'NPY segments': npy_file,
     'Metadata CSV': csv_file
 }
 

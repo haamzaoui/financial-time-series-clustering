@@ -1,6 +1,6 @@
 import pandas as pd
 
-prices = pd.read_csv("raw/sp500_prices.csv", index_col=0, parse_dates=True)
+prices = pd.read_csv("../../data/raw/sp500_prices.csv", index_col=0, parse_dates=True)
 
 # Only check for DATA ERRORS, not IPO gaps
 print("QUALITY CHECK (excluding IPO/delisting gaps):")

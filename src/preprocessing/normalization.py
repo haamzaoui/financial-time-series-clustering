@@ -2,6 +2,8 @@ import numpy as np
 import h5py
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+
 print("\n" + "="*70)
 print("DUAL NORMALIZATION (Min-Max & Z-Score)")
 print("="*70)
@@ -14,8 +16,8 @@ print("="*70)
 print("\n[1/5] LOADING RAW SEGMENTS...")
 print("-" * 70)
 
-h5_file = "../../data/processed/segments.h5"
-npy_file = "../../data/processed/segments.npy"
+h5_file  = ROOT / "data/processed/segments.h5"
+npy_file = ROOT / "data/processed/segments.npy"
 
 try:
     print(f"Loading from HDF5: {h5_file}")
@@ -98,7 +100,7 @@ print(f"  Zero std segments: {zero_std:,}")
 print("\n[4/5] SAVING NORMALIZED SEGMENTS...")
 print("-" * 70)
 
-output_dir = Path("../../data/processed")
+output_dir = ROOT / "data/processed"
 
 # Save Min-Max as HDF5
 h5_minmax = output_dir / "segments_normalized_minmax.h5"
@@ -127,10 +129,10 @@ zscore_size = h5_zscore.stat().st_size / (1024**2)
 print(f"  Size: {zscore_size:.1f} MB")
 
 # Also save as NPY for compatibility
-npy_minmax = output_dir / "segments_normalized_minmax.npy"
-np.save(str(npy_minmax), X_minmax)
-print(f"✓ Saved Min-Max NPY: {npy_minmax}")
+# npy_minmax = output_dir / "segments_normalized_minmax.npy"
+# np.save(str(npy_minmax), X_minmax)
+# print(f"✓ Saved Min-Max NPY: {npy_minmax}")
 
-npy_zscore = output_dir / "segments_normalized_zscore.npy"
-np.save(str(npy_zscore), X_zscore)
-print(f"✓ Saved Z-Score NPY: {npy_zscore}")
+# npy_zscore = output_dir / "segments_normalized_zscore.npy"
+# np.save(str(npy_zscore), X_zscore)
+# print(f"✓ Saved Z-Score NPY: {npy_zscore}")

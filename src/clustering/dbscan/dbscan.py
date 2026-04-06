@@ -1,496 +1,501 @@
 """
 DBSCAN CLUSTERING
 =================
-Density-Based Spatial Clustering of Applications with Noise
+Density-Based Spatial Clustering of Applications with Noise.
+Runs directly on the 50-dimensional normalised segments.
 
-Key differences from K-Means:
-- No need to specify number of clusters
-- Finds clusters of arbitrary shape
-- Identifies outliers/noise points
-- Parameter-driven: eps (radius) and min_samples
+PARAMETER SELECTION STRATEGY:
+  1. Fix min_samples = 2 × dimensions = 2 × 50 = 100
+     (standard rule-of-thumb for high-dimensional data)
+  2. k-distance graph → find natural eps from the elbow
+  3. Grid search      → test eps values around the elbow,
+                        evaluate by noise %, cluster count, silhouette
+  4. Final DBSCAN     → run with chosen parameters
 
-Input:  Normalized segments
+Input:
+  data/processed/sample_50k.h5
+  data/processed/sample_50k_metadata.csv
 Output:
-  - Cluster labels (including noise points as -1)
-  - Parameter optimization results
-  - Visualization plots
-  - Detailed analysis
+  results/dbscan_kdistance.png
+  results/dbscan_param_search.png
+  results/dbscan_param_search.csv
+  results/dbscan_labels.npy
+  results/dbscan_results.csv
+  results/dbscan_clusters.png
+  results/dbscan_report.txt
 """
 
 import numpy as np
 import pandas as pd
 import h5py
 import matplotlib.pyplot as plt
+import time
+from pathlib import Path
 from sklearn.cluster import DBSCAN
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import silhouette_score
-from pathlib import Path
 
-print("\n" + "="*70)
+ROOT        = Path(__file__).resolve().parents[3]
+RESULTS_DIR = Path(__file__).parent / "results"
+
+print("\n" + "=" * 70)
 print("DBSCAN CLUSTERING")
-print("="*70)
+print("=" * 70)
 
 
 # ============================================================
-# STEP 1: LOAD DATA
+# CONFIG
 # ============================================================
 
-print("\n[1/5] Loading normalized segments...")
+SAMPLE_H5        = ROOT / "data/processed/sample_50k.h5"
+SAMPLE_META      = ROOT / "data/processed/sample_50k_metadata.csv"
+N_EPS_CANDIDATES = 12      # number of eps values to test in grid search
+NOISE_MIN_PCT    = 5.0     # acceptable noise floor (%)
+NOISE_MAX_PCT    = 40.0    # acceptable noise ceiling (%)
+RANDOM_STATE     = 42
+
+
+# ============================================================
+# STEP 1: LOAD SHARED SAMPLE
+# ============================================================
+
+print("\n[1/5] Loading shared 50k sample...")
 print("-" * 70)
 
-h5_file = "../../../data/processed/segments_normalized_minmax.h5"
-# Alternative: h5_file = "data/processed/segments_zscore.h5"
+with h5py.File(SAMPLE_H5, "r") as f:
+    X          = f["segments"][:]
+    sample_idx = f["indices"][:]
 
-with h5py.File(h5_file, 'r') as f:
-    X = f['segments'][:]
+metadata = pd.read_csv(SAMPLE_META)
+N, D     = X.shape
 
-print(f"✓ Loaded segments: {X.shape}")
+# min_samples: 2 × dimensions (rule-of-thumb for high-dimensional data)
+MIN_SAMPLES_FIXED = 2 * D
 
-# Load metadata
-metadata = pd.read_csv("../../../data/processed/segments_metadata.csv")
-print(f"✓ Loaded metadata: {metadata.shape}")
+print(f"✓ Loaded sample   : {X.shape}")
+print(f"✓ Loaded metadata : {metadata.shape}")
+print(f"  Dimensions      : {D}")
+print(f"  min_samples     : 2 × {D} = {MIN_SAMPLES_FIXED}")
 
 
 # ============================================================
-# [SAMPLING] STEP 2: SAMPLE DATA FOR k-DISTANCE GRAPH
+# STEP 2: K-DISTANCE GRAPH  →  find natural eps
+# ============================================================
+# For each point compute its k-th nearest neighbour distance
+# (k = MIN_SAMPLES_FIXED). Sort ascending and plot.
+# The elbow = the point where the curve bends sharply upward.
+# Below the elbow: dense regions (potential clusters).
+# Above the elbow: sparse regions (noise).
+# The elbow value is the natural eps.
 # ============================================================
 
-print("\n[2/6] Preparing data for k-distance graph...")
+print(f"\n[2/5] k-distance graph (k={MIN_SAMPLES_FIXED})...")
 print("-" * 70)
+print("  Fitting NearestNeighbors — may take 2-4 min on 50k × 50D...")
 
-n_total = X.shape[0]
-dimensionality = X.shape[1]
+t0   = time.time()
+nbrs = NearestNeighbors(n_neighbors=MIN_SAMPLES_FIXED,
+                        algorithm="ball_tree", n_jobs=-1)
+nbrs.fit(X)
+distances, _ = nbrs.kneighbors(X)
+elapsed_nn   = time.time() - t0
 
-# [SAMPLING] Adaptive min_samples based on dimensionality
-min_samples = dimensionality + 1  # Rule: at least D + 1, where D = 50 → 51
-k = min_samples
+# k-th neighbour distance = last column, sorted ascending
+k_distances = np.sort(distances[:, -1])
 
-print(f"Dimensionality: {dimensionality}")
-print(f"Adaptive min_samples (k): {k}")
-print(f"Total segments: {n_total:,}")
+print(f"✓ NearestNeighbors done : {elapsed_nn:.1f} s")
+print(f"  k-distance range      : [{k_distances.min():.4f}, {k_distances.max():.4f}]")
+print(f"  Median k-distance     : {np.median(k_distances):.4f}")
+print(f"  75th percentile       : {np.percentile(k_distances, 75):.4f}")
+print(f"  90th percentile       : {np.percentile(k_distances, 90):.4f}")
 
-# [SAMPLING] Sample subset for k-distance graph (reduces computation from O(n²) to O(m²))
-sample_size = min(100000, n_total)  # Use up to 100k points for parameter search
-if sample_size < n_total:
-    print(f"\n[SAMPLING] Using {sample_size:,} samples ({100*sample_size/n_total:.1f}% of data)")
-    print(f"  Reason: Reduce computation time for k-distance graph")
-    sample_indices = np.random.RandomState(42).choice(n_total, size=sample_size, replace=False)
-    X_sample = X[sample_indices]
-    metadata = metadata.iloc[sample_indices].reset_index(drop=True)
-else:
-    print(f"\n[SAMPLING] Dataset small enough ({n_total:,} ≤ 50k), using all points")
-    X_sample = X
-    sample_indices = np.arange(n_total)
+# Automatic elbow via maximum second derivative
+step      = max(1, len(k_distances) // 1000)
+curve     = k_distances[::step]
+d2        = np.diff(np.diff(curve))
+elbow_idx = int(np.argmax(d2) * step)
+eps_elbow = float(k_distances[elbow_idx])
 
-print(f"  Sample shape for k-distance: {X_sample.shape}")
-print(f"  Sample metadata shape for k-distance: {metadata.shape}")
+print(f"\n  Elbow at index  : {elbow_idx:,} / {N:,}")
+print(f"  Suggested eps   : {eps_elbow:.4f}")
 
-X = X_sample
+# ── k-distance plot ───────────────────────────────────────
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ============================================================
-# STEP 2: FIND OPTIMAL eps PARAMETER
-# ============================================================
-
-
-# Use suggested eps (can adjust if needed)
-eps = 1.48
-min_samples = 51
-
-print(f"\nUsing parameters:")
-print(f"  eps: {eps:.4f}")
-print(f"  min_samples: {min_samples}")
-
-
-# ============================================================
-# STEP 3: RUN DBSCAN
-# ============================================================
-
-print("\n[3/5] Running DBSCAN...")
-print("-" * 70)
-
-dbscan = DBSCAN(eps=eps, min_samples=min_samples)
-labels = dbscan.fit_predict(X)
-
-# Count clusters and noise points
-n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-n_noise = list(labels).count(-1)
-
-print(f"\n✓ DBSCAN complete")
-print(f"  Number of clusters: {n_clusters}")
-print(f"  Number of noise points: {n_noise:,} ({n_noise/len(labels)*100:.2f}%)")
-print(f"  Number of core points: {len(labels) - n_noise:,}")
-
-# Cluster distribution
-unique, counts = np.unique(labels[labels >= 0], return_counts=True)
-print(f"\nCluster distribution:")
-for cluster_id, count in zip(unique, counts):
-    pct = (count / (len(labels) - n_noise)) * 100
-    print(f"  Cluster {cluster_id}: {count:6d} points ({pct:5.1f}%)")
-
-# Calculate silhouette (only for core points, excluding noise)
-if n_clusters > 1 and n_noise < len(labels):
-    core_mask = labels >= 0
-    if core_mask.sum() > 0:
-        try:
-            silhouette = silhouette_score(X[core_mask], labels[core_mask])
-            print(f"\nSilhouette Score (core points only): {silhouette:.4f}")
-        except:
-            silhouette = None
-            print(f"\nSilhouette Score: Could not calculate")
-    else:
-        silhouette = None
-else:
-    silhouette = None
-
-
-# ============================================================
-# STEP 4: SAVE RESULTS
-# ============================================================
-
-print("\n[4/5] Saving results...")
-print("-" * 70)
-
-Path("../results").mkdir(parents=True, exist_ok=True)
-
-# Save labels
-labels_file = Path("../results") / "dbscan_labels.npy"
-np.save(labels_file, labels)
-print(f"✓ Saved: {labels_file}")
-
-# Save with metadata
-results_df = metadata.copy()
-results_df['cluster'] = labels
-results_file = Path("../results") / "dbscan_results.csv"
-results_df.to_csv(results_file, index=False)
-print(f"✓ Saved: {results_file}")
-
-# Save parameters
-params_file = Path("../results") / "dbscan_parameters.txt"
-with open(params_file, 'w') as f:
-    f.write(f"DBSCAN Parameters\n")
-    f.write(f"eps: {eps:.6f}\n")
-    f.write(f"min_samples: {min_samples}\n")
-    f.write(f"\nResults\n")
-    f.write(f"Number of clusters: {n_clusters}\n")
-    f.write(f"Number of noise points: {n_noise}\n")
-    if silhouette is not None:
-        f.write(f"Silhouette Score: {silhouette:.4f}\n")
-
-print(f"✓ Saved: {params_file}")
-
-
-# ============================================================
-# STEP 5: VISUALIZATIONS
-# ============================================================
-
-print("\n[5/5] Creating visualizations...")
-print("-" * 70)
-
-fig = plt.figure(figsize=(16, 10))
-gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
-
-fig.suptitle(f'DBSCAN Clustering Results (eps={eps:.4f}, min_samples={min_samples})',
-            fontsize=14, fontweight='bold')
-
-# ──────────────────────────────────────────────────────────
-# PLOT 1: CLUSTER DISTRIBUTION (Bar chart)
-# ──────────────────────────────────────────────────────────
-
-ax1 = fig.add_subplot(gs[0, 0])
-
-cluster_counts = {}
-for cluster_id in unique:
-    cluster_counts[f'C{int(cluster_id)}'] = counts[list(unique).index(cluster_id)]
-cluster_counts['Noise'] = n_noise
-
-colors = plt.cm.Set3(np.linspace(0, 1, len(cluster_counts)))
-bars = ax1.bar(range(len(cluster_counts)), list(cluster_counts.values()), 
-              color=colors, edgecolor='black', linewidth=1.5)
-
-ax1.set_xticks(range(len(cluster_counts)))
-ax1.set_xticklabels(list(cluster_counts.keys()), rotation=45, ha='right')
-ax1.set_ylabel('Number of Points', fontsize=11, fontweight='bold')
-ax1.set_title('Cluster Distribution\n(Noise = points not in any cluster)', 
-             fontsize=12, fontweight='bold')
-ax1.grid(True, alpha=0.3, axis='y')
-
-# Add value labels
-for bar in bars:
-    height = bar.get_height()
-    ax1.text(bar.get_x() + bar.get_width()/2., height,
-            f'{int(height):,}', ha='center', va='bottom', fontsize=9)
-
-# ──────────────────────────────────────────────────────────
-# PLOT 2: CLUSTER PERCENTAGES
-# ──────────────────────────────────────────────────────────
-
-ax2 = fig.add_subplot(gs[0, 1])
-
-labels_pie = []
-sizes_pie = []
-for cluster_id in unique:
-    count = counts[list(unique).index(cluster_id)]
-    labels_pie.append(f'C{int(cluster_id)}\n({count:,})')
-    sizes_pie.append(count)
-
-# Add noise
-labels_pie.append(f'Noise\n({n_noise:,})')
-sizes_pie.append(n_noise)
-
-colors_pie = plt.cm.Set3(np.linspace(0, 1, len(labels_pie)))
-wedges, texts, autotexts = ax2.pie(sizes_pie, labels=labels_pie, colors=colors_pie,
-                                    autopct='%1.1f%%', startangle=90,
-                                    textprops={'fontsize': 9})
-
-for autotext in autotexts:
-    autotext.set_color('black')
-    autotext.set_fontweight('bold')
-
-ax2.set_title('Cluster Percentage Distribution', fontsize=12, fontweight='bold')
-
-# ──────────────────────────────────────────────────────────
-# PLOT 3: CLUSTER SIZES COMPARISON
-# ──────────────────────────────────────────────────────────
-
-ax3 = fig.add_subplot(gs[1, 0])
-
-cluster_labels_clean = [f'C{int(c)}' for c in unique]
-sizes_clean = list(counts)
-
-bars3 = ax3.bar(cluster_labels_clean, sizes_clean, color=colors[:-1], 
-               edgecolor='black', linewidth=1.5)
-ax3.set_ylabel('Number of Points', fontsize=11, fontweight='bold')
-ax3.set_title('Core Points per Cluster\n(Excluding Noise)', fontsize=12, fontweight='bold')
-ax3.grid(True, alpha=0.3, axis='y')
-
-for bar in bars3:
-    height = bar.get_height()
-    ax3.text(bar.get_x() + bar.get_width()/2., height,
-            f'{int(height):,}', ha='center', va='bottom', fontsize=10, fontweight='bold')
-
-# ──────────────────────────────────────────────────────────
-# PLOT 4: SUMMARY STATISTICS
-# ──────────────────────────────────────────────────────────
-
-ax4 = fig.add_subplot(gs[1, 1])
-ax4.axis('off')
-
-summary_text = f"""
-DBSCAN RESULTS SUMMARY
-
-Parameters:
-  eps = {eps:.6f}
-  min_samples = {min_samples}
-
-Results:
-  Clusters found: {n_clusters}
-  Noise points: {n_noise:,} ({n_noise/len(labels)*100:.2f}%)
-  Core points: {len(labels) - n_noise:,}
-  Total points: {len(labels):,}
-
-Quality Metrics:
-  Silhouette Score: {f'{silhouette:.4f}' if silhouette is not None else 'N/A (noise present)'}
-
-Characteristics:
-  • Finds arbitrary-shaped clusters
-  • Automatically detects outliers/noise
-  • No need to specify number of clusters
-  
-Advantages vs K-Means:
-  ✓ Discovers cluster count
-  ✓ Handles noise/outliers
-  ✓ Any cluster shape
-  
-Disadvantages:
-  ⚠️ Sensitive to parameters (eps, min_samples)
-  ⚠️ High-dimensional data challenging
-  ⚠️ Varying cluster densities difficult
-"""
-
-ax4.text(0.05, 0.95, summary_text, transform=ax4.transAxes,
-        fontsize=10, verticalalignment='top', fontfamily='monospace',
-        bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
-
+fig_kd, ax_kd = plt.subplots(figsize=(12, 5))
+ax_kd.plot(k_distances, linewidth=1.2, color="steelblue", label="k-distance")
+ax_kd.axvline(x=elbow_idx, color="red", linestyle="--", linewidth=1.8,
+              label=f"Elbow → eps ≈ {eps_elbow:.4f}")
+ax_kd.axhline(y=eps_elbow, color="red", linestyle=":", linewidth=1.2, alpha=0.6)
+ax_kd.scatter([elbow_idx], [eps_elbow], s=120, color="red", zorder=5)
+ax_kd.set_xlabel("Points sorted by k-distance", fontsize=12, fontweight="bold")
+ax_kd.set_ylabel(f"{MIN_SAMPLES_FIXED}-th nearest neighbour distance",
+                 fontsize=12, fontweight="bold")
+ax_kd.set_title(
+    f"k-Distance Graph  (k={MIN_SAMPLES_FIXED})  —  elbow = eps ≈ {eps_elbow:.4f}",
+    fontsize=13, fontweight="bold"
+)
+ax_kd.legend(fontsize=11)
+ax_kd.grid(True, alpha=0.3, linestyle="--")
 plt.tight_layout()
-
-plot_file_main = Path("../results") / "dbscan_analysis.png"
-plt.savefig(plot_file_main, dpi=300, bbox_inches='tight')
-print(f"✓ Saved: {plot_file_main}")
-
+fig_kd.savefig(RESULTS_DIR / "dbscan_kdistance.png",
+               dpi=300, bbox_inches="tight")
+print(f"\n✓ Saved: results/dbscan_kdistance.png")
 plt.show()
 
 
 # ============================================================
-# DETAILED ANALYSIS
+# STEP 3: PARAMETER GRID SEARCH
+# ============================================================
+# Test eps values around the elbow with two min_samples values.
+# For each combination record:
+#   - number of clusters found
+#   - noise percentage
+#   - silhouette score on core points
+# Pick best: acceptable noise + cluster count, then highest silhouette.
 # ============================================================
 
-print("\nCreating detailed analysis report...")
+print(f"\n[3/5] Parameter grid search...")
+print("-" * 70)
 
-report_text = f"""
-{'='*70}
-DBSCAN CLUSTERING REPORT
-{'='*70}
-Generated: {pd.Timestamp.now().isoformat()}
+eps_low        = eps_elbow * 0.4
+eps_high       = eps_elbow * 3.0
+EPS_CANDIDATES = np.linspace(eps_low, eps_high, N_EPS_CANDIDATES)
 
-WHAT IS DBSCAN?
-{'─'*70}
-DBSCAN = Density-Based Spatial Clustering of Applications with Noise
+# Test rule-of-thumb and a looser alternative (half)
+MIN_S_CANDIDATES = [max(5, MIN_SAMPLES_FIXED // 2), MIN_SAMPLES_FIXED]
 
-Key Features:
-  1. Finds clusters automatically (no need to specify k)
-  2. Identifies outliers as noise points (labeled as -1)
-  3. Can find arbitrarily-shaped clusters
-  4. Density-based approach
+print(f"  eps range     : [{eps_low:.4f}, {eps_high:.4f}]  ({N_EPS_CANDIDATES} values)")
+print(f"  min_samples   : {MIN_S_CANDIDATES}")
+print(f"  Total runs    : {N_EPS_CANDIDATES * len(MIN_S_CANDIDATES)}\n")
 
-Parameters:
-  • eps: Maximum distance between points to be neighbors
-  • min_samples: Minimum points in neighborhood to form cluster
+print(f"  {'eps':>8}  {'min_s':>6}  {'clusters':>9}  {'noise%':>7}  "
+      f"{'silhouette':>11}  {'verdict':>8}")
+print("  " + "-" * 60)
 
-PARAMETERS USED
-{'─'*70}
-eps: {eps:.6f}
-  → Two points are neighbors if distance ≤ {eps:.6f}
-  
-min_samples: {min_samples}
-  → Need at least {min_samples} neighbors to form core point
+search_records = []
 
-RESULTS
-{'─'*70}
-Number of clusters found: {n_clusters}
-Number of noise points: {n_noise:,} ({n_noise/len(labels)*100:.2f}%)
-Number of core points: {len(labels) - n_noise:,}
+for min_s in MIN_S_CANDIDATES:
+    for eps_val in EPS_CANDIDATES:
 
-Cluster Distribution:
-"""
+        db     = DBSCAN(eps=eps_val, min_samples=min_s, n_jobs=-1)
+        lbl    = db.fit_predict(X)
+        n_cl   = len(set(lbl)) - (1 if -1 in lbl else 0)
+        n_ns   = int((lbl == -1).sum())
+        ns_pct = n_ns / N * 100
+        core_m = lbl >= 0
 
-for cluster_id in unique:
-    count = counts[list(unique).index(cluster_id)]
-    pct = (count / (len(labels) - n_noise)) * 100
-    report_text += f"  Cluster {int(cluster_id)}: {count:6d} points ({pct:5.1f}%)\n"
+        sil = np.nan
+        if n_cl >= 2 and core_m.sum() > 100:
+            try:
+                sil = silhouette_score(
+                    X[core_m], lbl[core_m],
+                    sample_size=min(5000, core_m.sum()),
+                    random_state=RANDOM_STATE
+                )
+            except Exception:
+                pass
 
-report_text += f"""
+        ok      = (NOISE_MIN_PCT <= ns_pct <= NOISE_MAX_PCT) and (2 <= n_cl <= 10)
+        verdict = "OK" if ok else "--"
 
-INTERPRETATION
-{'─'*70}
+        search_records.append({
+            "eps": eps_val, "min_samples": min_s,
+            "n_clusters": n_cl, "noise_pct": ns_pct,
+            "silhouette": sil, "verdict": verdict
+        })
 
-1. NOISE POINTS ({n_noise:,} = {n_noise/len(labels)*100:.2f}%):
-"""
+        sil_str = f"{sil:.4f}" if not np.isnan(sil) else "   N/A"
+        print(f"  {eps_val:>8.4f}  {min_s:>6}  {n_cl:>9}  "
+              f"{ns_pct:>6.1f}%  {sil_str:>11}  {verdict:>8}")
 
-if n_noise > 0:
-    report_text += f"""   These points don't fit well into any cluster.
-   High noise percentage might indicate:
-   • Data is not naturally clustered
-   • Parameters (eps, min_samples) may need adjustment
-   • Outliers are present in the data
-"""
-else:
-    report_text += f"""   No noise points found. All points assigned to clusters.
-   This is rare but indicates well-defined clustering structure.
-"""
+search_df = pd.DataFrame(search_records)
+search_df.to_csv(RESULTS_DIR / "dbscan_param_search.csv", index=False)
+print(f"\n✓ Saved: results/dbscan_param_search.csv")
 
-report_text += f"""
+# ── Decision logic ────────────────────────────────────────
+ok_rows = search_df[search_df["verdict"] == "OK"]
 
-2. CLUSTER QUALITY:
-   Silhouette Score: {f'{silhouette:.4f}' if silhouette is not None else 'N/A (noise present)'}
-"""
-
-if silhouette is not None:
-    if silhouette > 0.5:
-        report_text += "   Quality: GOOD (clusters are well-separated)\n"
-    elif silhouette > 0.25:
-        report_text += "   Quality: FAIR (some overlap between clusters)\n"
+if len(ok_rows) > 0:
+    ok_with_sil = ok_rows.dropna(subset=["silhouette"])
+    if len(ok_with_sil) > 0:
+        best_row        = ok_with_sil.loc[ok_with_sil["silhouette"].idxmax()]
+        decision_reason = "highest silhouette among acceptable combinations"
     else:
-        report_text += "   Quality: POOR (significant cluster overlap)\n"
+        best_row        = ok_rows.loc[(ok_rows["noise_pct"] - 20).abs().idxmin()]
+        decision_reason = "noise % closest to 20% (silhouette unavailable)"
+else:
+    best_row        = search_df.loc[(search_df["noise_pct"] - 20).abs().idxmin()]
+    decision_reason = "no combination met criteria — fallback to noise % closest to 20%"
 
-report_text += f"""
+chosen_eps   = float(best_row["eps"])
+chosen_min_s = int(best_row["min_samples"])
 
-COMPARISON WITH K-MEANS
-{'─'*70}
-K-Means (k=4):
-  • Fixed 4 clusters
-  • All points assigned to clusters
-  • Spherical clusters
-  • No noise detection
+print(f"\n  {'─'*60}")
+print(f"  Chosen eps         : {chosen_eps:.4f}")
+print(f"  Chosen min_samples : {chosen_min_s}")
+print(f"  Decision reason    : {decision_reason}")
+print(f"  {'─'*60}")
 
-DBSCAN (eps={eps:.6f}):
-  • Found {n_clusters} clusters automatically
-  • {n_noise:,} points identified as noise
-  • Arbitrary cluster shapes
-  • Detected outliers
-  
-Which is better?
-  → Use DBSCAN if you want automatic cluster discovery
-  → Use DBSCAN if you want to identify outliers
-  → Use K-Means if you know number of clusters
+# ── Parameter search plot ─────────────────────────────────
+fig_ps, axes_ps = plt.subplots(1, 3, figsize=(16, 5))
+fig_ps.suptitle("DBSCAN Parameter Grid Search", fontsize=13, fontweight="bold")
 
-NEXT STEPS
-{'─'*70}
-1. Compare DBSCAN results with K-Means (using ARI, NMI)
-2. Analyze characteristics of DBSCAN clusters
-3. Examine noise points (are they true outliers?)
-4. Decide which method better fits your research questions
+for min_s, color, marker in zip(MIN_S_CANDIDATES,
+                                 ["steelblue", "darkorange"], ["o", "s"]):
+    sub = search_df[search_df["min_samples"] == min_s]
+    axes_ps[0].plot(sub["eps"], sub["n_clusters"], f"{marker}-",
+                    color=color, linewidth=1.8, markersize=6,
+                    label=f"min_s={min_s}")
+    axes_ps[1].plot(sub["eps"], sub["noise_pct"], f"{marker}-",
+                    color=color, linewidth=1.8, markersize=6,
+                    label=f"min_s={min_s}")
+    valid = sub.dropna(subset=["silhouette"])
+    if len(valid):
+        axes_ps[2].plot(valid["eps"], valid["silhouette"], f"{marker}-",
+                        color=color, linewidth=1.8, markersize=6,
+                        label=f"min_s={min_s}")
 
-If you want to adjust eps:
-  • Smaller eps → More noise, fewer/smaller clusters
-  • Larger eps → Less noise, more/larger clusters
-  • Use k-distance graph to guide selection
+for ax in axes_ps:
+    ax.axvline(x=chosen_eps, color="red", linestyle="--", linewidth=1.5,
+               label=f"Chosen eps={chosen_eps:.3f}")
+    ax.set_xlabel("eps", fontsize=11, fontweight="bold")
+    ax.grid(True, alpha=0.3, linestyle="--")
+    ax.legend(fontsize=9)
 
-FILES CREATED
-{'─'*70}
-1. dbscan_labels.npy           - Cluster assignments
-2. dbscan_results.csv          - Detailed results with metadata
-3. dbscan_parameters.txt       - Parameter values used
-4. dbscan_kdistance_graph.png  - Parameter selection plot
-5. dbscan_analysis.png         - Results visualization
-6. dbscan_report.txt           - This report
+axes_ps[0].set_title("Clusters found\n(target: 2–10)",
+                     fontsize=11, fontweight="bold")
+axes_ps[0].set_ylabel("Number of clusters", fontsize=11, fontweight="bold")
+axes_ps[0].axhline(y=2,  color="green", linestyle=":", alpha=0.5)
+axes_ps[0].axhline(y=10, color="green", linestyle=":", alpha=0.5)
 
-{'='*70}
-"""
+axes_ps[1].set_title("Noise %\n(target: 5–40%)", fontsize=11, fontweight="bold")
+axes_ps[1].set_ylabel("Noise %", fontsize=11, fontweight="bold")
+axes_ps[1].axhline(y=NOISE_MIN_PCT, color="green", linestyle=":", alpha=0.5)
+axes_ps[1].axhline(y=NOISE_MAX_PCT, color="green", linestyle=":", alpha=0.5)
 
-report_file = Path("../results") / "dbscan_report.txt"
-with open(report_file, 'w') as f:
-    f.write(report_text)
+axes_ps[2].set_title("Silhouette score\n(higher is better)",
+                     fontsize=11, fontweight="bold")
+axes_ps[2].set_ylabel("Silhouette", fontsize=11, fontweight="bold")
 
-print(f"✓ Saved: {report_file}")
+plt.tight_layout()
+fig_ps.savefig(RESULTS_DIR / "dbscan_param_search.png",
+               dpi=300, bbox_inches="tight")
+print(f"✓ Saved: results/dbscan_param_search.png")
+plt.show()
+
+
+# ============================================================
+# STEP 4: FINAL DBSCAN RUN
+# ============================================================
+
+print(f"\n[4/5] Final DBSCAN  "
+      f"(eps={chosen_eps:.4f}, min_samples={chosen_min_s})...")
+print("-" * 70)
+
+t0     = time.time()
+db     = DBSCAN(eps=chosen_eps, min_samples=chosen_min_s, n_jobs=-1)
+labels = db.fit_predict(X)
+elapsed_db = time.time() - t0
+
+n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+n_noise    = int((labels == -1).sum())
+noise_pct  = n_noise / N * 100
+core_mask  = labels >= 0
+
+print(f"✓ DBSCAN done         : {elapsed_db:.1f} s")
+print(f"  Clusters found      : {n_clusters}")
+print(f"  Noise points        : {n_noise:,}  ({noise_pct:.1f}%)")
+print(f"  Core points         : {core_mask.sum():,}  ({core_mask.sum()/N*100:.1f}%)")
+
+unique_c, counts_c = np.unique(labels[core_mask], return_counts=True)
+print(f"\n  Cluster distribution:")
+for cid, cnt in zip(unique_c, counts_c):
+    print(f"    Cluster {cid}: {cnt:7,}  ({cnt/N*100:.1f}% of total, "
+          f"{cnt/core_mask.sum()*100:.1f}% of core)")
+
+silhouette = np.nan
+if n_clusters >= 2 and core_mask.sum() > 100:
+    try:
+        silhouette = silhouette_score(
+            X[core_mask], labels[core_mask],
+            sample_size=min(5000, core_mask.sum()),
+            random_state=RANDOM_STATE
+        )
+        print(f"\n  Silhouette (core)   : {silhouette:.4f}")
+    except Exception as e:
+        print(f"\n  Silhouette          : could not compute ({e})")
+
+# Save
+np.save(RESULTS_DIR / "dbscan_labels.npy", labels)
+print(f"\n✓ Saved: results/dbscan_labels.npy")
+
+results_df            = metadata.copy()
+results_df["cluster"] = labels
+results_df.to_csv(RESULTS_DIR / "dbscan_results.csv", index=False)
+print(f"✓ Saved: results/dbscan_results.csv  ({len(results_df):,} rows)")
+
+
+# ============================================================
+# STEP 5: VISUALISATIONS + REPORT
+# ============================================================
+
+print(f"\n[5/5] Visualisations and report...")
+print("-" * 70)
+
+COLORS = plt.cm.Set3(np.linspace(0, 1, max(n_clusters, 1) + 1))
+
+# ── Bar + pie ─────────────────────────────────────────────
+fig_cl, (ax_bar, ax_pie) = plt.subplots(1, 2, figsize=(14, 5))
+fig_cl.suptitle(
+    f"DBSCAN  (eps={chosen_eps:.4f}, min_samples={chosen_min_s})",
+    fontsize=13, fontweight="bold"
+)
+
+bar_labels = [f"Cluster {c}" for c in unique_c] + ["Noise"]
+bar_values = list(counts_c) + [n_noise]
+bar_colors = [COLORS[i] for i in range(len(unique_c))] + ["#cccccc"]
+
+bars = ax_bar.bar(bar_labels, bar_values, color=bar_colors,
+                  edgecolor="black", linewidth=1.2)
+ax_bar.set_ylabel("Number of segments", fontsize=11, fontweight="bold")
+ax_bar.set_title("Segment count per cluster", fontsize=12, fontweight="bold")
+ax_bar.grid(True, axis="y", alpha=0.3)
+for bar in bars:
+    h = bar.get_height()
+    ax_bar.text(bar.get_x() + bar.get_width() / 2, h,
+                f"{int(h):,}", ha="center", va="bottom",
+                fontsize=9, fontweight="bold")
+
+ax_pie.pie(bar_values,
+           labels=[f"{l}\n({v:,})" for l, v in zip(bar_labels, bar_values)],
+           colors=bar_colors, autopct="%1.1f%%", startangle=90,
+           textprops={"fontsize": 9})
+ax_pie.set_title("Percentage distribution", fontsize=12, fontweight="bold")
+
+plt.tight_layout()
+fig_cl.savefig(RESULTS_DIR / "dbscan_clusters.png",
+               dpi=300, bbox_inches="tight")
+print(f"✓ Saved: results/dbscan_clusters.png")
+plt.show()
+
+# ── Cluster center patterns ───────────────────────────────
+if n_clusters >= 1:
+    fig_cp, ax_cp = plt.subplots(figsize=(12, 5))
+    for i, (cid, cnt) in enumerate(zip(unique_c, counts_c)):
+        center = X[labels == cid].mean(axis=0)
+        ax_cp.plot(center, linewidth=2, markersize=3, marker="o",
+                   color=COLORS[i],
+                   label=f"Cluster {cid}  (n={cnt:,})")
+    ax_cp.set_xlabel("Day in segment (1–50)", fontsize=12, fontweight="bold")
+    ax_cp.set_ylabel("Normalised price", fontsize=12, fontweight="bold")
+    ax_cp.set_title("Cluster centers — typical price pattern per cluster",
+                    fontsize=13, fontweight="bold")
+    ax_cp.legend(fontsize=10)
+    ax_cp.grid(True, alpha=0.3, linestyle="--")
+    ax_cp.set_xlim([0, D - 1])
+    plt.tight_layout()
+    fig_cp.savefig(RESULTS_DIR / "dbscan_centers.png",
+                   dpi=300, bbox_inches="tight")
+    print(f"✓ Saved: results/dbscan_centers.png")
+    plt.show()
+
+# ── Text report ───────────────────────────────────────────
+sil_str = f"{silhouette:.4f}" if not np.isnan(silhouette) else "N/A"
+sil_quality = (
+    "Excellent (> 0.75)" if not np.isnan(silhouette) and silhouette > 0.75 else
+    "Good (0.50–0.75)"   if not np.isnan(silhouette) and silhouette > 0.50 else
+    "Fair (0.25–0.50)"   if not np.isnan(silhouette) and silhouette > 0.25 else
+    "Poor (< 0.25)"      if not np.isnan(silhouette) else "N/A"
+)
+
+report_lines = [
+    "=" * 70,
+    "DBSCAN CLUSTERING — RESULTS REPORT",
+    "=" * 70,
+    f"Generated : {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    "",
+    "METHODOLOGY",
+    "─" * 70,
+    "  DBSCAN run directly on the 50-dimensional normalised segments.",
+    "  No PCA applied — segments are Min-Max normalised per-segment,",
+    "  preserving shape information. High autocorrelation between",
+    "  adjacent days means Euclidean distances remain meaningful in",
+    "  50D and the k-distance elbow is identifiable without reduction.",
+    "",
+    "CONFIGURATION",
+    "─" * 70,
+    f"  Sample size    : {N:,}",
+    f"  Dimensions     : {D}",
+    f"  min_samples    : {chosen_min_s}  (rule-of-thumb: 2 × {D} = {MIN_SAMPLES_FIXED})",
+    f"  eps            : {chosen_eps:.4f}  (k-distance elbow + grid search)",
+    f"  Decision basis : {decision_reason}",
+    f"  Runtime        : {elapsed_db:.1f} s",
+    "",
+    "PARAMETER SELECTION",
+    "─" * 70,
+    f"  k-distance elbow eps   : {eps_elbow:.4f}",
+    f"  Grid search range      : [{eps_low:.4f}, {eps_high:.4f}]",
+    f"  Chosen eps             : {chosen_eps:.4f}",
+    f"  Chosen min_samples     : {chosen_min_s}",
+    "",
+    "RESULTS",
+    "─" * 70,
+    f"  Clusters found         : {n_clusters}",
+    f"  Noise points           : {n_noise:,}  ({noise_pct:.1f}%)",
+    f"  Core points            : {core_mask.sum():,}  ({core_mask.sum()/N*100:.1f}%)",
+    f"  Silhouette (core)      : {sil_str}  →  {sil_quality}",
+    "",
+    "CLUSTER DISTRIBUTION",
+    "─" * 70,
+    f"  {'Cluster':<10} {'Segments':>10} {'% of total':>12} {'% of core':>12}",
+    "  " + "-" * 46,
+]
+
+for cid, cnt in zip(unique_c, counts_c):
+    report_lines.append(
+        f"  {cid:<10} {cnt:>10,} {cnt/N*100:>11.1f}%"
+        f" {cnt/core_mask.sum()*100:>11.1f}%"
+    )
+report_lines += [
+    f"  {'Noise':<10} {n_noise:>10,} {noise_pct:>11.1f}%            —",
+    "",
+    "=" * 70,
+]
+
+report_text = "\n".join(report_lines)
+(RESULTS_DIR / "dbscan_report.txt").write_text(report_text)
+print(report_text)
+print(f"✓ Saved: results/dbscan_report.txt")
 
 
 # ============================================================
 # FINAL SUMMARY
 # ============================================================
 
-print("\n" + "="*70)
+print("\n" + "=" * 70)
 print("✓ DBSCAN CLUSTERING COMPLETE")
-print("="*70)
-
+print("=" * 70)
 print(f"""
 SUMMARY:
 ────────
-Clusters found: {n_clusters}
-Noise points: {n_noise:,} ({n_noise/len(labels)*100:.2f}%)
-Silhouette: {f'{silhouette:.4f}' if silhouette is not None else 'N/A'}
+eps            : {chosen_eps:.4f}
+min_samples    : {chosen_min_s}
+Clusters found : {n_clusters}
+Noise          : {n_noise:,}  ({noise_pct:.1f}%)
+Silhouette     : {sil_str}
 
-PARAMETERS USED:
-────────────────
-eps: {eps:.6f} (from k-distance elbow)
-min_samples: {min_samples}
-
-FILES SAVED:
-────────────
+FILES SAVED (results/):
+───────────────────────
 ✓ dbscan_labels.npy
 ✓ dbscan_results.csv
-✓ dbscan_parameters.txt
-✓ dbscan_kdistance_graph.png
-✓ dbscan_analysis.png
+✓ dbscan_kdistance.png
+✓ dbscan_param_search.png
+✓ dbscan_param_search.csv
+✓ dbscan_clusters.png
+✓ dbscan_centers.png
 ✓ dbscan_report.txt
 
-NEXT STEPS:
-───────────
-1. Analyze DBSCAN cluster characteristics
-2. Compare DBSCAN vs K-Means results (ARI, NMI)
-3. Examine noise points
-4. Decide which clustering is better for your thesis
-
-STATUS: ✓ DBSCAN COMPLETE, READY FOR COMPARISON
+STATUS: ✓ READY FOR ANALYSIS
 """)
-
-print("="*70 + "\n")
+print("=" * 70 + "\n")

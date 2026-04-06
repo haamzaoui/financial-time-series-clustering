@@ -1,9 +1,11 @@
 import pandas as pd
 import yfinance as yf
+from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
 
 # CONFIG
-CSV_FILE = "../../data/raw/sp500_constituents.csv"         # used to fetch the S&P 500 tickers
+CSV_FILE = ROOT / "data/raw/sp500_constituents.csv"        # used to fetch the S&P 500 tickers
 START_DATE = "2000-01-01"
 END_DATE = "2026-01-01"
 DELAY_BETWEEN_REQUESTS = 0.05
@@ -89,7 +91,7 @@ if __name__ == "__main__":
     prices = download_prices(tickers, start=START_DATE, end=END_DATE)
 
     if prices is not None:
-        prices.to_parquet("../../data/raw/sp500_prices.parquet", compression="snappy")
+        prices.to_parquet(ROOT / "data/raw/sp500_prices.parquet", compression="snappy")
         print(f"✓ Saved:sp500_prices.parquet")
         
         prices.to_csv("../../data/raw/sp500_prices.csv")
