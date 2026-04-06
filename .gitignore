@@ -1,4 +1,3 @@
-cat > .gitignore << 'EOF'
 # Virtual environment
 venv/
 
@@ -9,10 +8,12 @@ data/processed/*.h5
 data/processed/*.npy
 data/processed/*.csv
 
-# Results (plots and reports — regeneratable)
-src/clustering/*/results/
-src/evaluation/results/
+# Results (plots and reports — regeneratable by running the scripts)
+src/clustering/kmeans/results/
+src/clustering/hierarchical/results/
+src/clustering/dbscan/results/
 src/clustering/results/
+src/evaluation/results/
 
 # macOS
 .DS_Store
@@ -26,4 +27,3 @@ __pycache__/
 
 # Jupyter
 .ipynb_checkpoints/
-EOF
