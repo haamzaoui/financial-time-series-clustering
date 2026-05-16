@@ -1,0 +1,29 @@
+# Virtual environment
+venv/
+
+# Data files (large / regeneratable)
+data/raw/*.parquet
+data/raw/*.csv
+data/processed/*.h5
+data/processed/*.npy
+data/processed/*.csv
+
+# Results (plots and reports — regeneratable by running the scripts)
+src/clustering/kmeans/results/
+src/clustering/hierarchical/results/
+src/clustering/dbscan/results/
+src/clustering/results/
+src/evaluation/results/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints/
