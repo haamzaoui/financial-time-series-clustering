@@ -40,7 +40,7 @@ The workflow consists of:
 
 ## Reproducibility
 
-For a reproducibility guide and instructions on how to run the full pipeline, see `DOCUMENTATION.md`.
+For a reproducibility guide and instructions on how to run the full pipeline, see `Documentation.md`.
 
 ## Notes
 
