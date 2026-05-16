@@ -7,7 +7,6 @@ financial-time-series-clustering/
 ├── data/
 │   ├── raw/
 │   │   ├── sp500_constituents.csv        # S&P 500 ticker list (input)
-│   │   └── sp500_prices.parquet          # downloaded adjusted close prices
 │   └── processed/
 │       ├── segments.h5                   # all raw segments (570k×50)
 │       ├── segments_metadata.csv         # ticker/position metadata per segment
@@ -34,13 +33,11 @@ financial-time-series-clustering/
 │   │   │   └── results/
 │   │   └── dbscan/
 │   │       ├── dbscan.py
-│   │       ├── v2_dbscan.py
 │   │       └── results/
 │   └── evaluation/
 │       ├── cluster_quality.py
 │       ├── consistency.py
 │       ├── tsne.py
-│       ├── stats.py
 │       └── results/
 ├── requirements.txt
 └── DOCUMENTATION.md
@@ -95,14 +92,11 @@ python src/clustering/kmeans/silhouette_kmeans.py
 python src/clustering/kmeans/kmeans.py
 python src/clustering/hierarchical/agglomerative.py
 python src/clustering/dbscan/dbscan.py
-#    If dbscan.py produces 1 cluster, run instead:
-#    python src/clustering/dbscan/v2_dbscan.py
 
-# 8. Evaluate results (steps 8a–8d can run in any order after step 7)
+# 8. Evaluate results
 python src/evaluation/cluster_quality.py
 python src/evaluation/consistency.py
 python src/evaluation/tsne.py
-python src/evaluation/stats.py
 ```
 
 **Note on paths:** All scripts resolve paths relative to the project root using `Path(__file__).resolve().parents[N]`. Run each script from any working directory; absolute paths are constructed automatically.
